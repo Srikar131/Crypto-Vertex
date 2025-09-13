@@ -13,7 +13,7 @@ import os
 from contextlib import asynccontextmanager # Import the context manager
 
 # --- Configuration ---
-SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
+SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD"]
 
 # --- Pydantic model for request body ---
 class CryptoData(BaseModel):
