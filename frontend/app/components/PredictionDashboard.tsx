@@ -53,7 +53,7 @@ export default function PredictionDashboard() {
     const [error, setError] = ReactTyped.useState(null);
     const [selectedCrypto, setSelectedCrypto] = ReactTyped.useState('BTC-USD');
     const cryptoOptions = ['BTC-USD', 'ETH-USD', 'ADA-USD', 'SOL-USD', 'DOGE-USD'];
-    const API_BASE_URL = "http://127.0.0.1:8000";
+    const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
     const modelIcons = {
         lstm: <BrainCircuit size={20} className="text-cyan-400" />,
