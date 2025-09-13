@@ -44,25 +44,46 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
     return unscaled_array[:, close_price_index]
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
-    df = yf.Ticker(symbol).history(period="100d")
-    
-    # Robustness check: Ensure data was downloaded
-    if df.empty:
-        raise ValueError(f"Could not download historical data for {symbol}. The symbol may be invalid or the data source is unavailable.")
+    # Fetch more days to avoid insufficient rows after indicators
+    df = yf.Ticker(symbol).history(period="180d")
 
+    # Robustness check: Ensure data was downloaded
+    if df.empty or len(df) < 60:
+        raise ValueError(f"Insufficient historical data for {symbol}. Got only {len(df)} rows.")
+
+    # Feature engineering
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'])
     df['MACD'] = calculate_macd(df['Close'])
     df['Price_Change'] = df['Close'].pct_change()
     df['Volume_Change'] = df['Volume'].pct_change()
-    df.ffill(inplace=True); df.bfill(inplace=True)
-    features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']
+
+    df.ffill(inplace=True)
+    df.bfill(inplace=True)
+
+    features = [
+        'Open', 'High', 'Low', 'Close', 'Volume',
+        'SMA_20', 'SMA_50', 'RSI', 'MACD',
+        'Price_Change', 'Volume_Change'
+    ]
     df = df[features]
+
+    # Ensure at least 60 rows remain
+    if len(df) < 60:
+        raise ValueError(f"Not enough rows after feature engineering for {symbol}. Got {len(df)} rows.")
+
     last_60_days = df.tail(60)
-    scaled_data = scaler_obj.transform(last_60_days)
+
+    # Scale safely
+    try:
+        scaled_data = scaler_obj.transform(last_60_days)
+    except Exception as e:
+        raise ValueError(f"Scaling failed for {symbol}. Error: {str(e)}")
+
     X_live = np.reshape(scaled_data, (1, 60, 11))
     X_live_xgb = np.reshape(scaled_data, (1, 60 * 11))
+
     return X_live, X_live_xgb
 
 # --- Lifespan manager for loading models on startup ---
@@ -88,9 +109,9 @@ async def lifespan(app: FastAPI):
             scaler_obj = joblib.load(scaler_path)
             
             loaded_assets[symbol] = {"lstm": lstm_m, "bilstm": bilstm_m, "xgboost": xgb_m, "scaler": scaler_obj}
-            print(f"Successfully loaded assets for {symbol}")
+            print(f"✅ Successfully loaded assets for {symbol}")
         except Exception as e:
-            print(f"!!! FAILED to load assets for {symbol}. Error: {e}")
+            print(f"❌ FAILED to load assets for {symbol}. Error: {e}")
     
     print(f"Startup complete. Loaded assets for: {list(loaded_assets.keys())}")
     yield
@@ -106,7 +127,8 @@ app.add_middleware(
 
 # --- API Endpoints ---
 @app.get("/")
-async def root(): return {"message": "Cryptocurrency Price Prediction API"}
+async def root():
+    return {"message": "Cryptocurrency Price Prediction API"}
 
 @app.post("/predict")
 async def predict_price(crypto_data: CryptoData):
@@ -119,11 +141,22 @@ async def predict_price(crypto_data: CryptoData):
         lstm_pred_scaled = assets["lstm"].predict(X_live_lstm)
         bilstm_pred_scaled = assets["bilstm"].predict(X_live_lstm)
         xgb_pred_scaled = assets["xgboost"].predict(X_live_xgb).reshape(-1, 1)
+
         lstm_pred = inverse_scale_predictions(lstm_pred_scaled, assets["scaler"])
         bilstm_pred = inverse_scale_predictions(bilstm_pred_scaled, assets["scaler"])
         xgb_pred = inverse_scale_predictions(xgb_pred_scaled, assets["scaler"])
+
         ensemble_pred = (lstm_pred[0] * 0.3 + bilstm_pred[0] * 0.5 + xgb_pred[0] * 0.2)
-        return {"predictions": {"lstm": float(lstm_pred[0]), "bidirectional_lstm": float(bilstm_pred[0]), "xgboost": float(xgb_pred[0]), "ensemble": float(ensemble_pred)}, "message": f"Live prediction for {symbol} successful."}
+
+        return {
+            "predictions": {
+                "lstm": float(lstm_pred[0]),
+                "bidirectional_lstm": float(bilstm_pred[0]),
+                "xgboost": float(xgb_pred[0]),
+                "ensemble": float(ensemble_pred)
+            },
+            "message": f"Live prediction for {symbol} successful."
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
@@ -133,7 +166,10 @@ async def get_history(symbol: str):
         raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported or failed to load.")
     try:
         df = yf.Ticker(symbol).history(period="90d")
-        df.reset_index(inplace=True); df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
+        if df.empty:
+            raise ValueError(f"No historical data available for {symbol}.")
+        df.reset_index(inplace=True)
+        df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
         return df[['Date', 'Close']].to_dict('records')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
