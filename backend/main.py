@@ -45,6 +45,11 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     df = yf.Ticker(symbol).history(period="100d")
+    
+    # Robustness check: Ensure data was downloaded
+    if df.empty:
+        raise ValueError(f"Could not download historical data for {symbol}. The symbol may be invalid or the data source is unavailable.")
+
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'])
