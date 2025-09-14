@@ -6,7 +6,9 @@ from tensorflow.keras.optimizers import Adam
 from pydantic import BaseModel
 import numpy as np
 import pandas as pd
-import yfinance as yf
+import requests
+import time
+from datetime import datetime, timedelta
 import joblib
 from sklearn.preprocessing import MinMaxScaler
 import os
@@ -14,6 +16,82 @@ from contextlib import asynccontextmanager
 
 # --- Configuration ---
 SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
+
+# Alpha Vantage configuration
+ALPHA_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_API_KEY")
+ALPHA_BASE_URL = "https://www.alphavantage.co/query"
+
+# Simple in-memory cache to mitigate rate limits and reduce latency
+alpha_cache = {}
+
+def _symbol_to_alpha_params(symbol: str):
+    try:
+        base, quote = symbol.split("-")
+    except ValueError:
+        base, quote = symbol, "USD"
+    return base.upper(), quote.upper()
+
+def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
+    if not ALPHA_API_KEY:
+        raise ValueError("Missing Alpha Vantage API key. Set ALPHA_VANTAGE_API_KEY in environment.")
+
+    # Cache key and TTL (seconds)
+    cache_key = f"daily::{symbol}"
+    now_ts = time.time()
+    cached = alpha_cache.get(cache_key)
+    if cached and (now_ts - cached["ts"]) < 120:  # 2 minutes TTL
+        return cached["df"].copy()
+
+    base, quote = _symbol_to_alpha_params(symbol)
+    params = {
+        "function": "DIGITAL_CURRENCY_DAILY",
+        "symbol": base,
+        "market": quote,
+        "apikey": ALPHA_API_KEY,
+    }
+    try:
+        resp = requests.get(ALPHA_BASE_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise ValueError(f"Alpha Vantage request failed for {symbol}: {str(e)}")
+
+    time_series = data.get("Time Series (Digital Currency Daily)")
+    if not time_series:
+        # Error message from API often under "Note" or "Error Message"
+        err = data.get("Note") or data.get("Error Message") or str(data)
+        raise ValueError(f"Alpha Vantage response invalid for {symbol}: {err}")
+
+    # Build DataFrame
+    records = []
+    for date_str, values in time_series.items():
+        try:
+            records.append({
+                "Date": datetime.strptime(date_str, "%Y-%m-%d"),
+                "Open": float(values.get("1a. open (USD)") or values.get("1b. open (USD)")),
+                "High": float(values.get("2a. high (USD)") or values.get("2b. high (USD)")),
+                "Low": float(values.get("3a. low (USD)") or values.get("3b. low (USD)")),
+                "Close": float(values.get("4a. close (USD)") or values.get("4b. close (USD)")),
+                "Volume": float(values.get("5. volume", 0.0)),
+            })
+        except Exception:
+            # Skip rows with malformed data
+            continue
+
+    if not records:
+        raise ValueError(f"No valid records parsed from Alpha Vantage for {symbol}.")
+
+    df = pd.DataFrame.from_records(records)
+    df.sort_values("Date", inplace=True)
+    df.set_index("Date", inplace=True)
+
+    # Ensure minimum number of days
+    if len(df) < min_days:
+        raise ValueError(f"Insufficient Alpha Vantage data for {symbol}. Got {len(df)} rows.")
+
+    # Cache it
+    alpha_cache[cache_key] = {"df": df.copy(), "ts": now_ts}
+    return df
 
 # --- Pydantic model for request body ---
 class CryptoData(BaseModel):
@@ -45,11 +123,7 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     # Fetch more days to avoid insufficient rows after indicators
-    df = yf.Ticker(symbol).history(period="180d")
-
-    # Robustness check: Ensure data was downloaded
-    if df.empty or len(df) < 60:
-        raise ValueError(f"Insufficient historical data for {symbol}. Got only {len(df)} rows.")
+    df = fetch_alpha_vantage_daily(symbol, min_days=180)
 
     # Feature engineering
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
@@ -165,11 +239,10 @@ async def get_history(symbol: str):
     if symbol not in loaded_assets:
         raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported or failed to load.")
     try:
-        df = yf.Ticker(symbol).history(period="90d")
-        if df.empty:
-            raise ValueError(f"No historical data available for {symbol}.")
+        df = fetch_alpha_vantage_daily(symbol, min_days=90)
+        df = df.tail(90).copy()
         df.reset_index(inplace=True)
         df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
-        return df[['Date', 'Close']].to_dict('records')
+        return df[["Date", "Close"]].to_dict('records')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
