@@ -181,6 +181,12 @@ def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
         'SMA_20', 'SMA_50', 'RSI', 'MACD',
         'Price_Change', 'Volume_Change'
     ]
+    # Select features with validation for clearer error reporting
+    missing_features = [c for c in features if c not in df.columns]
+    if missing_features:
+        raise ValueError(
+            f"Feature columns missing: {missing_features}; available columns: {list(df.columns)}"
+        )
     df = df[features]
 
     # Ensure at least 60 rows remain
