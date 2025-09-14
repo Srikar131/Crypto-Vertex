@@ -15,11 +15,7 @@ interface PredictionData {
         ensemble: number;
     };
 }
-
-interface HistoryData {
-    Date: string;
-    Close: number;
-}
+interface HistoryData { Date: string; Close: number; }
 
 // FIXED: Define a specific type for the tooltip props to fix the 'any' error
 type CustomTooltipProps = {
@@ -53,7 +49,6 @@ const containerVariants = {
     transition: { staggerChildren: 0.1 }
   }
 };
-
 const itemVariants = {
   hidden: { y: 20, opacity: 0 },
   visible: {
@@ -90,13 +85,13 @@ export default function PredictionDashboard() {
             ]);
             setPrediction(predResponse.data);
             setHistoricalData(histResponse.data);
-        } catch (err: any) { // FIXED: Define 'err' as type 'any' to fix the other error
+        } catch (err: any) { // FIXED: Define 'err' as type 'any' to satisfy strict rules
             console.error("Error fetching data:", err);
             setError(err.response?.data?.detail || "Failed to fetch data. Ensure the backend is running and reachable.");
         } finally {
             setIsLoading(false);
         }
-    }, [selectedCrypto, API_BASE_URL]); // Add dependencies
+    }, [selectedCrypto, API_BASE_URL]); // Add dependencies that fetchData relies on
 
     // FIXED: Add fetchData to the dependency array
     useEffect(() => {
@@ -108,7 +103,7 @@ export default function PredictionDashboard() {
     };
 
     return (
-        <div className="min-h-screen text-white">
+        <div className="min-h-screen text-white bg-slate-900">
             <div className="container mx-auto px-4 py-8">
                 <motion.header
                     variants={itemVariants}
