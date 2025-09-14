@@ -126,6 +126,92 @@ def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
     alpha_cache[cache_key] = {"df": df.copy(), "ts": now_ts}
     return df
 
+def fetch_alpha_vantage_intraday_resampled(symbol: str, min_days: int = 180, interval: str = "60min") -> pd.DataFrame:
+    if not ALPHA_API_KEY:
+        raise ValueError("Missing Alpha Vantage API key. Set ALPHA_VANTAGE_API_KEY in environment.")
+
+    cache_key = f"intraday::{symbol}::{interval}"
+    now_ts = time.time()
+    cached = alpha_cache.get(cache_key)
+    if cached and (now_ts - cached["ts"]) < 120:
+        return cached["df"].copy()
+
+    base, quote = _symbol_to_alpha_params(symbol)
+    params = {
+        "function": "CRYPTO_INTRADAY",
+        "symbol": base,
+        "market": quote,
+        "interval": interval,
+        "outputsize": "full",
+        "apikey": ALPHA_API_KEY,
+    }
+    try:
+        resp = requests.get(ALPHA_BASE_URL, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise ValueError(f"Alpha Vantage intraday request failed for {symbol}: {str(e)}")
+
+    # Intraday series key example: "Time Series Crypto (60min)"
+    series_key = None
+    for k in list(data.keys()):
+        if isinstance(k, str) and k.lower().startswith("time series crypto"):
+            series_key = k
+            break
+    if not series_key:
+        err = data.get("Note") or data.get("Error Message") or str(data)
+        raise ValueError(f"Alpha Vantage intraday response invalid for {symbol}: {err}")
+
+    ts = data.get(series_key) or {}
+    if not ts:
+        raise ValueError(f"Alpha Vantage intraday time series empty for {symbol}.")
+
+    rows = []
+    for ts_str, values in ts.items():
+        try:
+            dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            # Try ISO without seconds if needed
+            try:
+                dt = datetime.fromisoformat(ts_str)
+            except Exception:
+                continue
+        try:
+            rows.append({
+                "DateTime": dt,
+                "Open": float(values.get("1. open")),
+                "High": float(values.get("2. high")),
+                "Low": float(values.get("3. low")),
+                "Close": float(values.get("4. close")),
+                "Volume": float(values.get("5. volume", 0.0)),
+            })
+        except Exception:
+            continue
+
+    if not rows:
+        raise ValueError(f"No valid intraday rows parsed for {symbol}.")
+
+    df = pd.DataFrame.from_records(rows)
+    df.sort_values("DateTime", inplace=True)
+    df.set_index("DateTime", inplace=True)
+
+    # Resample to daily OHLCV
+    ohlc = df[["Open","High","Low","Close"]].resample("1D").agg({
+        "Open": "first", "High": "max", "Low": "min", "Close": "last"
+    })
+    vol = df[["Volume"]].resample("1D").sum()
+    daily = pd.concat([ohlc, vol], axis=1)
+    daily.dropna(subset=["Open","High","Low","Close"], inplace=True)
+    daily.index.name = "Date"
+
+    if len(daily) < min_days:
+        # If not enough days, still return what we have; caller will check length
+        pass
+
+    # Cache
+    alpha_cache[cache_key] = {"df": daily.copy(), "ts": now_ts}
+    return daily
+
 # --- Pydantic model for request body ---
 class CryptoData(BaseModel):
     symbol: str
@@ -156,7 +242,11 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     # Fetch more days to avoid insufficient rows after indicators
-    df = fetch_alpha_vantage_daily(symbol, min_days=180)
+    try:
+        df = fetch_alpha_vantage_daily(symbol, min_days=180)
+    except Exception as daily_err:
+        # Fallback to intraday resampled data if daily fails (e.g., API change or limits)
+        df = fetch_alpha_vantage_intraday_resampled(symbol, min_days=180)
 
     # Validate required columns exist, try to recover case differences
     required = {"Open","High","Low","Close","Volume"}
@@ -285,7 +375,10 @@ async def get_history(symbol: str):
     if symbol not in loaded_assets:
         raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported or failed to load.")
     try:
-        df = fetch_alpha_vantage_daily(symbol, min_days=90)
+        try:
+            df = fetch_alpha_vantage_daily(symbol, min_days=90)
+        except Exception:
+            df = fetch_alpha_vantage_intraday_resampled(symbol, min_days=90)
         df = df.tail(90).copy()
         df.reset_index(inplace=True)
         df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
