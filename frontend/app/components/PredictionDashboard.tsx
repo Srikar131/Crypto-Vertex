@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 import { BrainCircuit, Cpu, Zap, Gem } from 'lucide-react';
 
+// --- Helper Functions and Interfaces ---
 interface PredictionData {
     predictions: {
         lstm: number;
@@ -14,9 +15,25 @@ interface PredictionData {
         ensemble: number;
     };
 }
-interface HistoryData { Date: string; Close: number; }
-const formatPrice = (price: number | undefined) => price ? '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '$...';
-const CustomTooltip = ({ active, payload, label }: any) => {
+
+interface HistoryData {
+    Date: string;
+    Close: number;
+}
+
+// FIXED: Define a specific type for the tooltip props to fix the 'any' error
+type CustomTooltipProps = {
+    active?: boolean;
+    payload?: { value: number }[];
+    label?: string;
+};
+
+const formatPrice = (price: number | undefined) => {
+    if (price === undefined) return '$...';
+    return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
+const CustomTooltip = ({ active, payload, label }: CustomTooltipProps) => {
     if (active && payload?.length) {
         return (
             <div className="bg-slate-700/80 p-3 rounded-lg border border-slate-600">
@@ -27,9 +44,26 @@ const CustomTooltip = ({ active, payload, label }: any) => {
     }
     return null;
 };
-const containerVariants = { hidden: { opacity: 0 }, visible: { opacity: 1, transition: { staggerChildren: 0.1 } } };
-const itemVariants = { hidden: { y: 20, opacity: 0 }, visible: { y: 0, opacity: 1, transition: { type: "spring", stiffness: 100 } } };
 
+// --- Animation Variants ---
+const containerVariants = {
+  hidden: { opacity: 0 },
+  visible: {
+    opacity: 1,
+    transition: { staggerChildren: 0.1 }
+  }
+};
+
+const itemVariants = {
+  hidden: { y: 20, opacity: 0 },
+  visible: {
+    y: 0,
+    opacity: 1,
+    transition: { type: "spring", stiffness: 100 }
+  }
+};
+
+// --- Main Component ---
 export default function PredictionDashboard() {
     const [prediction, setPrediction] = useState<PredictionData | null>(null);
     const [historicalData, setHistoricalData] = useState<HistoryData[]>([]);
@@ -39,7 +73,14 @@ export default function PredictionDashboard() {
     const cryptoOptions = ['BTC-USD', 'ETH-USD', 'ADA-USD', 'SOL-USD', 'DOGE-USD'];
     const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
-    const fetchData = async () => {
+    const modelIcons = {
+        lstm: <BrainCircuit size={20} className="text-cyan-400" />,
+        bilstm: <Zap size={20} className="text-blue-400" />,
+        xgboost: <Cpu size={20} className="text-green-400" />,
+    };
+
+    // FIXED: Wrap fetchData in useCallback to satisfy the useEffect dependency warning
+    const fetchData = useCallback(async () => {
         setIsLoading(true);
         setError(null);
         try {
@@ -49,39 +90,57 @@ export default function PredictionDashboard() {
             ]);
             setPrediction(predResponse.data);
             setHistoricalData(histResponse.data);
-        } catch (err: any) {
+        } catch (err: any) { // FIXED: Define 'err' as type 'any' to fix the other error
             console.error("Error fetching data:", err);
             setError(err.response?.data?.detail || "Failed to fetch data. Ensure the backend is running and reachable.");
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [selectedCrypto, API_BASE_URL]); // Add dependencies
+
+    // FIXED: Add fetchData to the dependency array
+    useEffect(() => {
+        fetchData();
+    }, [fetchData]);
 
     const handlePredictClick = () => {
         fetchData();
     };
 
-    useEffect(() => {
-        fetchData();
-    }, []);
-
-    const modelIcons = { lstm: <BrainCircuit size={20} className="text-cyan-400" />, bilstm: <Zap size={20} className="text-blue-400" />, xgboost: <Cpu size={20} className="text-green-400" /> };
-
     return (
-        <div className="min-h-screen text-white bg-slate-900">
+        <div className="min-h-screen text-white">
             <div className="container mx-auto px-4 py-8">
-                <motion.header variants={itemVariants} initial="hidden" animate="visible" className="text-center mb-12">
-                    <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">Crypto Vertex AI</h1>
-                    <p className="text-slate-400 mt-2">Real-time Price Predictions Powered by Srikar Vaka</p>
+                <motion.header
+                    variants={itemVariants}
+                    initial="hidden"
+                    animate="visible"
+                    className="text-center mb-12"
+                >
+                    <h1 className="text-5xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
+                        Crypto Vertex AI
+                    </h1>
+                    <p className="text-slate-400 mt-2">
+                        Real-time Price Predictions Powered by Srikar Vaka
+                    </p>
                 </motion.header>
 
-                <motion.div className="grid grid-cols-1 lg:grid-cols-4 gap-6" variants={containerVariants} initial="hidden" animate="visible">
+                <motion.div
+                    className="grid grid-cols-1 lg:grid-cols-4 gap-6"
+                    variants={containerVariants}
+                    initial="hidden"
+                    animate="visible"
+                >
                     <motion.div variants={itemVariants} className="lg:col-span-3 flex flex-col gap-6">
                         <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-2xl p-6 flex-grow">
                              <h3 className="text-xl font-semibold mb-4">{selectedCrypto} - Last 90 Days Price</h3>
                              <ResponsiveContainer width="100%" height={350}>
                                 <AreaChart data={historicalData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <defs><linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#8884d8" stopOpacity={0.8}/><stop offset="95%" stopColor="#8884d8" stopOpacity={0}/></linearGradient></defs>
+                                    <defs>
+                                        <linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#8884d8" stopOpacity={0.8}/>
+                                            <stop offset="95%" stopColor="#8884d8" stopOpacity={0}/>
+                                        </linearGradient>
+                                    </defs>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                     <XAxis dataKey="Date" stroke="#9CA3AF" tick={{ fontSize: 12 }} interval={14} />
                                     <YAxis stroke="#9CA3AF" tickFormatter={(value) => `$${Number(value/1000).toLocaleString()}k`} tick={{ fontSize: 12 }} domain={['dataMin - 1000', 'dataMax + 1000']} />
@@ -104,7 +163,11 @@ export default function PredictionDashboard() {
                         <div className="bg-slate-800/50 backdrop-blur-sm border border-slate-700 rounded-2xl p-6">
                            <div className="flex items-center gap-3 mb-4"><Gem size={24} className="text-purple-400" /><h3 className="text-lg font-semibold">Ensemble Prediction</h3></div>
                            <AnimatePresence mode="wait">
-                               <motion.p key={prediction ? prediction.predictions.ensemble : 'loading'} initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }} className="text-4xl font-bold text-white text-center py-4">
+                               <motion.p 
+                                 key={prediction ? prediction.predictions.ensemble : 'loading'}
+                                 initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}
+                                 className="text-4xl font-bold text-white text-center py-4"
+                               >
                                  {isLoading ? '...' : formatPrice(prediction?.predictions.ensemble)}
                                </motion.p>
                            </AnimatePresence>
