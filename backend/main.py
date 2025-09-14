@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 import tensorflow as tf
 import xgboost as xgb
 from fastapi import FastAPI, HTTPException
@@ -6,217 +9,19 @@ from tensorflow.keras.optimizers import Adam
 from pydantic import BaseModel
 import numpy as np
 import pandas as pd
-import requests
-import time
-from datetime import datetime, timedelta
 import joblib
 from sklearn.preprocessing import MinMaxScaler
 import os
 from contextlib import asynccontextmanager
+from alpha_vantage.cryptocurrencies import CryptoCurrencies
 
 # --- Configuration ---
 SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
+SYMBOL_MAP = { "BTC-USD": "BTC", "ETH-USD": "ETH", "ADA-USD": "ADA", "DOGE-USD": "DOGE", "SOL-USD": "SOL" }
 
-# Alpha Vantage configuration
-ALPHA_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY") or os.getenv("ALPHAVANTAGE_API_KEY") or os.getenv("ALPHA_API_KEY")
-ALPHA_BASE_URL = "https://www.alphavantage.co/query"
-
-# Simple in-memory cache to mitigate rate limits and reduce latency
-alpha_cache = {}
-
-def _symbol_to_alpha_params(symbol: str):
-    try:
-        base, quote = symbol.split("-")
-    except ValueError:
-        base, quote = symbol, "USD"
-    return base.upper(), quote.upper()
-
-def normalize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    desired = {"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
-    lower_to_original = {str(c).lower(): c for c in df.columns}
-    rename_map = {}
-    # First pass: exact lowercase match
-    for k_lower, proper in desired.items():
-        if proper in df.columns:
-            continue
-        if k_lower in lower_to_original:
-            rename_map[lower_to_original[k_lower]] = proper
-    # Second pass: substring fallback (e.g., "1a. open (usd)")
-    if len(rename_map) < 5:
-        for k_lower, proper in desired.items():
-            if proper in set(list(rename_map.values()) + list(df.columns)):
-                continue
-            candidates = [c for c in df.columns if k_lower in str(c).lower()]
-            if candidates:
-                rename_map[candidates[0]] = proper
-    if rename_map:
-        df = df.rename(columns=rename_map)
-    return df
-
-def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
-    if not ALPHA_API_KEY:
-        raise ValueError("Missing Alpha Vantage API key. Set ALPHA_VANTAGE_API_KEY in environment.")
-
-    # Cache key and TTL (seconds)
-    cache_key = f"daily::{symbol}"
-    now_ts = time.time()
-    cached = alpha_cache.get(cache_key)
-    if cached and (now_ts - cached["ts"]) < 120:  # 2 minutes TTL
-        return cached["df"].copy()
-
-    base, quote = _symbol_to_alpha_params(symbol)
-    params = {
-        "function": "DIGITAL_CURRENCY_DAILY",
-        "symbol": base,
-        "market": quote,
-        "apikey": ALPHA_API_KEY,
-    }
-    try:
-        resp = requests.get(ALPHA_BASE_URL, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        raise ValueError(f"Alpha Vantage request failed for {symbol}: {str(e)}")
-
-    time_series = data.get("Time Series (Digital Currency Daily)")
-    if not time_series:
-        # Error message from API often under "Note" or "Error Message"
-        err = data.get("Note") or data.get("Error Message") or str(data)
-        raise ValueError(f"Alpha Vantage response invalid for {symbol}: {err}")
-
-    # Build DataFrame
-    records = []
-    for date_str, values in time_series.items():
-        try:
-            records.append({
-                "Date": datetime.strptime(date_str, "%Y-%m-%d"),
-                "Open": float(values.get("1a. open (USD)") or values.get("1b. open (USD)")),
-                "High": float(values.get("2a. high (USD)") or values.get("2b. high (USD)")),
-                "Low": float(values.get("3a. low (USD)") or values.get("3b. low (USD)")),
-                "Close": float(values.get("4a. close (USD)") or values.get("4b. close (USD)")),
-                "Volume": float(values.get("5. volume", 0.0)),
-            })
-        except Exception:
-            # Skip rows with malformed data
-            continue
-
-    if not records:
-        raise ValueError(f"No valid records parsed from Alpha Vantage for {symbol}.")
-
-    df = pd.DataFrame.from_records(records)
-    if df.empty:
-        raise ValueError(f"No valid rows parsed from Alpha Vantage for {symbol}.")
-    # Normalize potential column naming/case issues
-    df = normalize_ohlcv_columns(df)
-
-    # Ensure types
-    for col in ["Open","High","Low","Close","Volume"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df.sort_values("Date", inplace=True)
-    df.set_index("Date", inplace=True)
-
-    # Ensure minimum number of days
-    if len(df) < min_days:
-        raise ValueError(f"Insufficient Alpha Vantage data for {symbol}. Got {len(df)} rows.")
-
-    # Cache it
-    alpha_cache[cache_key] = {"df": df.copy(), "ts": now_ts}
-    return df
-
-def fetch_alpha_vantage_intraday_resampled(symbol: str, min_days: int = 180, interval: str = "60min") -> pd.DataFrame:
-    if not ALPHA_API_KEY:
-        raise ValueError("Missing Alpha Vantage API key. Set ALPHA_VANTAGE_API_KEY in environment.")
-
-    cache_key = f"intraday::{symbol}::{interval}"
-    now_ts = time.time()
-    cached = alpha_cache.get(cache_key)
-    if cached and (now_ts - cached["ts"]) < 120:
-        return cached["df"].copy()
-
-    base, quote = _symbol_to_alpha_params(symbol)
-    params = {
-        "function": "CRYPTO_INTRADAY",
-        "symbol": base,
-        "market": quote,
-        "interval": interval,
-        "outputsize": "full",
-        "apikey": ALPHA_API_KEY,
-    }
-    try:
-        resp = requests.get(ALPHA_BASE_URL, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        raise ValueError(f"Alpha Vantage intraday request failed for {symbol}: {str(e)}")
-
-    # Intraday series key example: "Time Series Crypto (60min)"
-    series_key = None
-    for k in list(data.keys()):
-        if isinstance(k, str) and k.lower().startswith("time series crypto"):
-            series_key = k
-            break
-    if not series_key:
-        err = data.get("Note") or data.get("Error Message") or str(data)
-        raise ValueError(f"Alpha Vantage intraday response invalid for {symbol}: {err}")
-
-    ts = data.get(series_key) or {}
-    if not ts:
-        raise ValueError(f"Alpha Vantage intraday time series empty for {symbol}.")
-
-    rows = []
-    for ts_str, values in ts.items():
-        try:
-            dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            # Try ISO without seconds if needed
-            try:
-                dt = datetime.fromisoformat(ts_str)
-            except Exception:
-                continue
-        try:
-            rows.append({
-                "DateTime": dt,
-                "Open": float(values.get("1. open")),
-                "High": float(values.get("2. high")),
-                "Low": float(values.get("3. low")),
-                "Close": float(values.get("4. close")),
-                "Volume": float(values.get("5. volume", 0.0)),
-            })
-        except Exception:
-            continue
-
-    if not rows:
-        raise ValueError(f"No valid intraday rows parsed for {symbol}.")
-
-    df = pd.DataFrame.from_records(rows)
-    df.sort_values("DateTime", inplace=True)
-    df.set_index("DateTime", inplace=True)
-
-    # Resample to daily OHLCV
-    ohlc = df[["Open","High","Low","Close"]].resample("1D").agg({
-        "Open": "first", "High": "max", "Low": "min", "Close": "last"
-    })
-    vol = df[["Volume"]].resample("1D").sum()
-    daily = pd.concat([ohlc, vol], axis=1)
-    daily.dropna(subset=["Open","High","Low","Close"], inplace=True)
-    daily.index.name = "Date"
-
-    if len(daily) < min_days:
-        # If not enough days, still return what we have; caller will check length
-        pass
-
-    # Cache
-    alpha_cache[cache_key] = {"df": daily.copy(), "ts": now_ts}
-    return daily
-
-# --- Pydantic model for request body ---
 class CryptoData(BaseModel):
     symbol: str
 
-# --- Global variable to hold all loaded assets ---
 loaded_assets = {}
 
 # --- Helper Functions ---
@@ -241,104 +46,72 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
     return unscaled_array[:, close_price_index]
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
-    # Fetch more days to avoid insufficient rows after indicators
-    try:
-        df = fetch_alpha_vantage_daily(symbol, min_days=180)
-    except Exception as daily_err:
-        # Fallback to intraday resampled data if daily fails (e.g., API change or limits)
-        df = fetch_alpha_vantage_intraday_resampled(symbol, min_days=180)
+    api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+    alpha_symbol = SYMBOL_MAP.get(symbol)
+    cc = CryptoCurrencies(key=api_key, output_format='pandas')
+    df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
+    
+    if df.empty:
+        raise ValueError(f"Could not download data for {symbol}.")
 
-    # Validate required columns exist, try to recover case differences
-    required = {"Open","High","Low","Close","Volume"}
-    df = normalize_ohlcv_columns(df)
-    if not required.issubset(set(df.columns)):
-        missing = sorted(list(required - set(df.columns)))
-        raise ValueError(f"Required columns missing after fetch: {missing}; got {list(df.columns)}")
+    # vvv THIS IS THE CORRECTED RENAMING LOGIC vvv
+    df.rename(columns={
+        '1. open': 'Open', '2. high': 'High',
+        '3. low': 'Low', '4. close': 'Close',
+        '5. volume': 'Volume'
+    }, inplace=True)
+    # ^^^ THIS IS THE CORRECTED RENAMING LOGIC ^^^
+    
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
+    df.sort_index(inplace=True)
 
-    # Feature engineering
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'])
     df['MACD'] = calculate_macd(df['Close'])
     df['Price_Change'] = df['Close'].pct_change()
     df['Volume_Change'] = df['Volume'].pct_change()
-
-    df.ffill(inplace=True)
-    df.bfill(inplace=True)
-
-    features = [
-        'Open', 'High', 'Low', 'Close', 'Volume',
-        'SMA_20', 'SMA_50', 'RSI', 'MACD',
-        'Price_Change', 'Volume_Change'
-    ]
-    # Select features with validation for clearer error reporting
-    missing_features = [c for c in features if c not in df.columns]
-    if missing_features:
-        raise ValueError(
-            f"Feature columns missing: {missing_features}; available columns: {list(df.columns)}"
-        )
+    df.ffill(inplace=True); df.bfill(inplace=True)
+    
+    features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']
     df = df[features]
-
-    # Ensure at least 60 rows remain
-    if len(df) < 60:
-        raise ValueError(f"Not enough rows after feature engineering for {symbol}. Got {len(df)} rows.")
-
+    
     last_60_days = df.tail(60)
-
-    # Scale safely
-    try:
-        scaled_data = scaler_obj.transform(last_60_days)
-    except Exception as e:
-        raise ValueError(f"Scaling failed for {symbol}. Error: {str(e)}")
-
+    if len(last_60_days) < 60:
+        raise ValueError(f"Not enough historical data for {symbol}. Got {len(last_60_days)} days.")
+        
+    scaled_data = scaler_obj.transform(last_60_days)
     X_live = np.reshape(scaled_data, (1, 60, 11))
     X_live_xgb = np.reshape(scaled_data, (1, 60 * 11))
-
     return X_live, X_live_xgb
 
-# --- Lifespan manager for loading models on startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Loading all ML models and scalers...")
-    optimizer = Adam(learning_rate=0.001)
-    loss = 'mse'
+    optimizer = Adam(learning_rate=0.001); loss = 'mse'
     for symbol in SUPPORTED_SYMBOLS:
         try:
             prefix = symbol.split('-')[0].lower()
-            lstm_path = f"models/{prefix}_lstm_model.h5"
-            bilstm_path = f"models/{prefix}_bilstm_model.h5"
-            xgb_path = f"models/{prefix}_xgboost_model.json"
-            scaler_path = f"models/{prefix}_scaler.gz"
-
-            lstm_m = tf.keras.models.load_model(lstm_path, compile=False)
-            bilstm_m = tf.keras.models.load_model(bilstm_path, compile=False)
-            lstm_m.compile(optimizer=optimizer, loss=loss, metrics=['mae'])
-            bilstm_m.compile(optimizer=optimizer, loss=loss, metrics=['mae'])
-            
-            xgb_m = xgb.XGBRegressor(); xgb_m.load_model(xgb_path)
-            scaler_obj = joblib.load(scaler_path)
-            
-            loaded_assets[symbol] = {"lstm": lstm_m, "bilstm": bilstm_m, "xgboost": xgb_m, "scaler": scaler_obj}
-            print(f"✅ Successfully loaded assets for {symbol}")
+            assets = {}
+            assets["lstm"] = tf.keras.models.load_model(f"models/{prefix}_lstm_model.h5", compile=False)
+            assets["bilstm"] = tf.keras.models.load_model(f"models/{prefix}_bilstm_model.h5", compile=False)
+            assets["lstm"].compile(optimizer=optimizer, loss=loss, metrics=['mae'])
+            assets["bilstm"].compile(optimizer=optimizer, loss=loss, metrics=['mae'])
+            assets["xgboost"] = xgb.XGBRegressor(); assets["xgboost"].load_model(f"models/{prefix}_xgboost_model.json")
+            assets["scaler"] = joblib.load(f"models/{prefix}_scaler.gz")
+            loaded_assets[symbol] = assets
+            print(f"Successfully loaded assets for {symbol}")
         except Exception as e:
-            print(f"❌ FAILED to load assets for {symbol}. Error: {e}")
-    
+            print(f"!!! FAILED to load assets for {symbol}. Error: {e}")
     print(f"Startup complete. Loaded assets for: {list(loaded_assets.keys())}")
     yield
-    print("Cleaning up resources...")
-    loaded_assets.clear()
+    print("Cleaning up resources..."); loaded_assets.clear()
 
-# --- FastAPI App Initialization ---
 app = FastAPI(title="Crypto Price Prediction API", version="1.0.0", lifespan=lifespan)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- API Endpoints ---
 @app.get("/")
-async def root():
-    return {"message": "Cryptocurrency Price Prediction API"}
+async def root(): return {"message": "Cryptocurrency Price Prediction API"}
 
 @app.post("/predict")
 async def predict_price(crypto_data: CryptoData):
@@ -348,40 +121,31 @@ async def predict_price(crypto_data: CryptoData):
     try:
         assets = loaded_assets[symbol]
         X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"])
-        lstm_pred_scaled = assets["lstm"].predict(X_live_lstm)
-        bilstm_pred_scaled = assets["bilstm"].predict(X_live_lstm)
-        xgb_pred_scaled = assets["xgboost"].predict(X_live_xgb).reshape(-1, 1)
-
-        lstm_pred = inverse_scale_predictions(lstm_pred_scaled, assets["scaler"])
-        bilstm_pred = inverse_scale_predictions(bilstm_pred_scaled, assets["scaler"])
-        xgb_pred = inverse_scale_predictions(xgb_pred_scaled, assets["scaler"])
-
+        lstm_pred = inverse_scale_predictions(assets["lstm"].predict(X_live_lstm), assets["scaler"])
+        bilstm_pred = inverse_scale_predictions(assets["bilstm"].predict(X_live_lstm), assets["scaler"])
+        xgb_pred = inverse_scale_predictions(assets["xgboost"].predict(X_live_xgb).reshape(-1, 1), assets["scaler"])
         ensemble_pred = (lstm_pred[0] * 0.3 + bilstm_pred[0] * 0.5 + xgb_pred[0] * 0.2)
-
-        return {
-            "predictions": {
-                "lstm": float(lstm_pred[0]),
-                "bidirectional_lstm": float(bilstm_pred[0]),
-                "xgboost": float(xgb_pred[0]),
-                "ensemble": float(ensemble_pred)
-            },
-            "message": f"Live prediction for {symbol} successful."
-        }
+        return {"predictions": {"lstm": float(lstm_pred[0]), "bidirectional_lstm": float(bilstm_pred[0]), "xgboost": float(xgb_pred[0]), "ensemble": float(ensemble_pred)}}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
 @app.get("/history")
 async def get_history(symbol: str):
     if symbol not in loaded_assets:
-        raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported or failed to load.")
+        raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported.")
     try:
-        try:
-            df = fetch_alpha_vantage_daily(symbol, min_days=90)
-        except Exception:
-            df = fetch_alpha_vantage_intraday_resampled(symbol, min_days=90)
-        df = df.tail(90).copy()
-        df.reset_index(inplace=True)
-        df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
-        return df[["Date", "Close"]].to_dict('records')
+        api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+        alpha_symbol = SYMBOL_MAP.get(symbol)
+        cc = CryptoCurrencies(key=api_key, output_format='pandas')
+        df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
+        # vvv THIS IS THE CORRECTED RENAMING LOGIC vvv
+        df.rename(columns={f'4. close (USD)': 'Close'}, inplace=True)
+        # ^^^ THIS IS THE CORRECTED RENAMING LOGIC ^^^
+        df.sort_index(inplace=True)
+        df_history = df.tail(90).reset_index().rename(columns={'index': 'Date'})
+        df_history['Date'] = pd.to_datetime(df_history['Date']).dt.strftime('%Y-%m-%d')
+        return df_history[['Date', 'Close']].to_dict('records')
     except Exception as e:
+        if "rate limit" in str(e):
+             raise HTTPException(status_code=429, detail="API rate limit exceeded. Please try again in a minute.")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
