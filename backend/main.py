@@ -82,6 +82,21 @@ def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
         raise ValueError(f"No valid records parsed from Alpha Vantage for {symbol}.")
 
     df = pd.DataFrame.from_records(records)
+    if df.empty:
+        raise ValueError(f"No valid rows parsed from Alpha Vantage for {symbol}.")
+    # Normalize potential column case issues
+    rename_map = {}
+    lower_to_col = {c.lower(): c for c in df.columns}
+    for col in ["Open","High","Low","Close","Volume"]:
+        if col not in df.columns and col.lower() in lower_to_col:
+            rename_map[lower_to_col[col.lower()]] = col
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+
+    # Ensure types
+    for col in ["Open","High","Low","Close","Volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
     df.sort_values("Date", inplace=True)
     df.set_index("Date", inplace=True)
 
@@ -124,6 +139,20 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     # Fetch more days to avoid insufficient rows after indicators
     df = fetch_alpha_vantage_daily(symbol, min_days=180)
+
+    # Validate required columns exist, try to recover case differences
+    required = {"Open","High","Low","Close","Volume"}
+    if not required.issubset(set(df.columns)):
+        lower_to_col = {c.lower(): c for c in df.columns}
+        rename_map = {}
+        for col in list(required):
+            if col not in df.columns and col.lower() in lower_to_col:
+                rename_map[lower_to_col[col.lower()]] = col
+        if rename_map:
+            df = df.rename(columns=rename_map)
+    if not required.issubset(set(df.columns)):
+        missing = sorted(list(required - set(df.columns)))
+        raise ValueError(f"Required columns missing after fetch: {missing}")
 
     # Feature engineering
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
