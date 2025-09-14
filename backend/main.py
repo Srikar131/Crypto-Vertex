@@ -31,6 +31,30 @@ def _symbol_to_alpha_params(symbol: str):
         base, quote = symbol, "USD"
     return base.upper(), quote.upper()
 
+def normalize_ohlcv_columns(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    desired = {"open": "Open", "high": "High", "low": "Low", "close": "Close", "volume": "Volume"}
+    lower_to_original = {str(c).lower(): c for c in df.columns}
+    rename_map = {}
+    # First pass: exact lowercase match
+    for k_lower, proper in desired.items():
+        if proper in df.columns:
+            continue
+        if k_lower in lower_to_original:
+            rename_map[lower_to_original[k_lower]] = proper
+    # Second pass: substring fallback (e.g., "1a. open (usd)")
+    if len(rename_map) < 5:
+        for k_lower, proper in desired.items():
+            if proper in set(list(rename_map.values()) + list(df.columns)):
+                continue
+            candidates = [c for c in df.columns if k_lower in str(c).lower()]
+            if candidates:
+                rename_map[candidates[0]] = proper
+    if rename_map:
+        df = df.rename(columns=rename_map)
+    return df
+
 def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
     if not ALPHA_API_KEY:
         raise ValueError("Missing Alpha Vantage API key. Set ALPHA_VANTAGE_API_KEY in environment.")
@@ -84,14 +108,8 @@ def fetch_alpha_vantage_daily(symbol: str, min_days: int = 180) -> pd.DataFrame:
     df = pd.DataFrame.from_records(records)
     if df.empty:
         raise ValueError(f"No valid rows parsed from Alpha Vantage for {symbol}.")
-    # Normalize potential column case issues
-    rename_map = {}
-    lower_to_col = {c.lower(): c for c in df.columns}
-    for col in ["Open","High","Low","Close","Volume"]:
-        if col not in df.columns and col.lower() in lower_to_col:
-            rename_map[lower_to_col[col.lower()]] = col
-    if rename_map:
-        df.rename(columns=rename_map, inplace=True)
+    # Normalize potential column naming/case issues
+    df = normalize_ohlcv_columns(df)
 
     # Ensure types
     for col in ["Open","High","Low","Close","Volume"]:
@@ -142,17 +160,10 @@ def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
 
     # Validate required columns exist, try to recover case differences
     required = {"Open","High","Low","Close","Volume"}
-    if not required.issubset(set(df.columns)):
-        lower_to_col = {c.lower(): c for c in df.columns}
-        rename_map = {}
-        for col in list(required):
-            if col not in df.columns and col.lower() in lower_to_col:
-                rename_map[lower_to_col[col.lower()]] = col
-        if rename_map:
-            df = df.rename(columns=rename_map)
+    df = normalize_ohlcv_columns(df)
     if not required.issubset(set(df.columns)):
         missing = sorted(list(required - set(df.columns)))
-        raise ValueError(f"Required columns missing after fetch: {missing}")
+        raise ValueError(f"Required columns missing after fetch: {missing}; got {list(df.columns)}")
 
     # Feature engineering
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
