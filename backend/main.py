@@ -19,8 +19,9 @@ from alpha_vantage.cryptocurrencies import CryptoCurrencies
 SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
 SYMBOL_MAP = { "BTC-USD": "BTC", "ETH-USD": "ETH", "ADA-USD": "ADA", "DOGE-USD": "DOGE", "SOL-USD": "SOL" }
 
-class CryptoData(BaseModel):
+class ApiRequest(BaseModel):
     symbol: str
+    apiKey: str
 
 loaded_assets = {}
 
@@ -45,22 +46,18 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
     unscaled_array = scaler_obj.inverse_transform(dummy_array)
     return unscaled_array[:, close_price_index]
 
-def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
-    api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
+def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler, api_key: str):
     alpha_symbol = SYMBOL_MAP.get(symbol)
     cc = CryptoCurrencies(key=api_key, output_format='pandas')
     df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
-    
+
     if df.empty:
         raise ValueError(f"Could not download data for {symbol}.")
 
-    # vvv THIS IS THE CORRECTED RENAMING LOGIC vvv
     df.rename(columns={
-        '1. open': 'Open', '2. high': 'High',
-        '3. low': 'Low', '4. close': 'Close',
-        '5. volume': 'Volume'
+        '1. open': 'Open', '2. high': 'High', '3. low': 'Low', 
+        '4. close': 'Close', '5. volume': 'Volume'
     }, inplace=True)
-    # ^^^ THIS IS THE CORRECTED RENAMING LOGIC ^^^
     
     df = df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
     df.sort_index(inplace=True)
@@ -84,6 +81,23 @@ def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     X_live = np.reshape(scaled_data, (1, 60, 11))
     X_live_xgb = np.reshape(scaled_data, (1, 60 * 11))
     return X_live, X_live_xgb
+
+def get_history_data(symbol: str, api_key: str):
+    alpha_symbol = SYMBOL_MAP.get(symbol)
+    cc = CryptoCurrencies(key=api_key, output_format='pandas')
+    df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
+
+    if df.empty:
+        raise ValueError(f"Could not download history data for {symbol}.")
+    
+    # vvv THIS IS THE CORRECTED LINE vvv
+    df.rename(columns={'4. close': 'Close'}, inplace=True)
+    # ^^^ THIS IS THE CORRECTED LINE ^^^
+
+    df.sort_index(inplace=True)
+    df_history = df.tail(90).reset_index().rename(columns={'index': 'Date'})
+    df_history['Date'] = pd.to_datetime(df_history['Date']).dt.strftime('%Y-%m-%d')
+    return df_history[['Date', 'Close']].to_dict('records')
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -114,13 +128,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 async def root(): return {"message": "Cryptocurrency Price Prediction API"}
 
 @app.post("/predict")
-async def predict_price(crypto_data: CryptoData):
-    symbol = crypto_data.symbol
+async def predict_price(request: ApiRequest):
+    symbol = request.symbol
+    api_key = request.apiKey
     if symbol not in loaded_assets:
         raise HTTPException(status_code=404, detail=f"Predictions for symbol '{symbol}' are not supported or failed to load.")
     try:
         assets = loaded_assets[symbol]
-        X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"])
+        X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"], api_key)
         lstm_pred = inverse_scale_predictions(assets["lstm"].predict(X_live_lstm), assets["scaler"])
         bilstm_pred = inverse_scale_predictions(assets["bilstm"].predict(X_live_lstm), assets["scaler"])
         xgb_pred = inverse_scale_predictions(assets["xgboost"].predict(X_live_xgb).reshape(-1, 1), assets["scaler"])
@@ -129,23 +144,16 @@ async def predict_price(crypto_data: CryptoData):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
 
-@app.get("/history")
-async def get_history(symbol: str):
-    if symbol not in loaded_assets:
-        raise HTTPException(status_code=404, detail=f"History for symbol '{symbol}' is not supported.")
+@app.post("/history")
+async def get_history(request: ApiRequest):
+    symbol = request.symbol
+    api_key = request.apiKey
+    if symbol not in SUPPORTED_SYMBOLS:
+        raise HTTPException(status_code=404, detail=f"History for {symbol} is not supported.")
     try:
-        api_key = os.getenv('ALPHA_VANTAGE_API_KEY')
-        alpha_symbol = SYMBOL_MAP.get(symbol)
-        cc = CryptoCurrencies(key=api_key, output_format='pandas')
-        df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
-        # vvv THIS IS THE CORRECTED RENAMING LOGIC vvv
-        df.rename(columns={f'4. close (USD)': 'Close'}, inplace=True)
-        # ^^^ THIS IS THE CORRECTED RENAMING LOGIC ^^^
-        df.sort_index(inplace=True)
-        df_history = df.tail(90).reset_index().rename(columns={'index': 'Date'})
-        df_history['Date'] = pd.to_datetime(df_history['Date']).dt.strftime('%Y-%m-%d')
-        return df_history[['Date', 'Close']].to_dict('records')
+        history_data = get_history_data(symbol, api_key)
+        return history_data
     except Exception as e:
         if "rate limit" in str(e):
-             raise HTTPException(status_code=429, detail="API rate limit exceeded. Please try again in a minute.")
+             raise HTTPException(status_code=429, detail="The provided API key has exceeded its rate limit.")
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
