@@ -13,15 +13,20 @@ import joblib
 from sklearn.preprocessing import MinMaxScaler
 import os
 from contextlib import asynccontextmanager
-from alpha_vantage.cryptocurrencies import CryptoCurrencies
+import requests
 
 # --- Configuration ---
 SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
-SYMBOL_MAP = { "BTC-USD": "BTC", "ETH-USD": "ETH", "ADA-USD": "ADA", "DOGE-USD": "DOGE", "SOL-USD": "SOL" }
+COINGECKO_MAP = {
+    "BTC-USD": "bitcoin",
+    "ETH-USD": "ethereum",
+    "ADA-USD": "cardano",
+    "DOGE-USD": "dogecoin",
+    "SOL-USD": "solana"
+}
 
 class ApiRequest(BaseModel):
     symbol: str
-    apiKey: str
 
 loaded_assets = {}
 
@@ -46,59 +51,62 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
     unscaled_array = scaler_obj.inverse_transform(dummy_array)
     return unscaled_array[:, close_price_index]
 
-def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler, api_key: str):
-    alpha_symbol = SYMBOL_MAP.get(symbol)
-    cc = CryptoCurrencies(key=api_key, output_format='pandas')
-    df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
+def get_coingecko_ohlc(symbol: str, days=90):
+    coin_id = COINGECKO_MAP[symbol]
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {"vs_currency": "usd", "days": days}
+    r = requests.get(url, params=params)
+    if not r.ok:
+        raise ValueError("CoinGecko data fetch failed or symbol not found!")
+    prices = r.json().get("prices")
+    if not prices:
+        raise ValueError("No data received from CoinGecko.")
+    df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
+    df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
+    df = df.groupby("Date").last().reset_index()
+    # Synthesize OHLCV (use Close for other columns as fallback)
+    df["Open"] = df["Close"]
+    df["High"] = df["Close"]
+    df["Low"] = df["Close"]
+    df["Volume"] = 0  # CoinGecko's market_chart OHLC does not provide volume at daily granularity in free
+    return df
 
-    if df.empty:
-        raise ValueError(f"Could not download data for {symbol}.")
-
-    df.rename(columns={
-        '1. open': 'Open', '2. high': 'High', '3. low': 'Low', 
-        '4. close': 'Close', '5. volume': 'Volume'
-    }, inplace=True)
-    
-    df = df[['Open', 'High', 'Low', 'Close', 'Volume']].apply(pd.to_numeric)
-    df.sort_index(inplace=True)
-
+def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
+    df = get_coingecko_ohlc(symbol, days=90).copy()
+    # Add features
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'])
     df['MACD'] = calculate_macd(df['Close'])
     df['Price_Change'] = df['Close'].pct_change()
-    df['Volume_Change'] = df['Volume'].pct_change()
+    df['Volume_Change'] = df['Volume'].pct_change() if "Volume" in df else 0
     df.ffill(inplace=True); df.bfill(inplace=True)
-    
-    features = ['Open', 'High', 'Low', 'Close', 'Volume', 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']
+
+    features = ['Open', 'High', 'Low', 'Close', 'Volume',
+                'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']
     df = df[features]
-    
+    # --- FIX NaN/inf from features ---
+    df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
+    # ---------------------------------
     last_60_days = df.tail(60)
     if len(last_60_days) < 60:
         raise ValueError(f"Not enough historical data for {symbol}. Got {len(last_60_days)} days.")
-        
     scaled_data = scaler_obj.transform(last_60_days)
     X_live = np.reshape(scaled_data, (1, 60, 11))
     X_live_xgb = np.reshape(scaled_data, (1, 60 * 11))
     return X_live, X_live_xgb
 
-def get_history_data(symbol: str, api_key: str):
-    alpha_symbol = SYMBOL_MAP.get(symbol)
-    cc = CryptoCurrencies(key=api_key, output_format='pandas')
-    df, meta_data = cc.get_digital_currency_daily(symbol=alpha_symbol, market='USD')
 
-    if df.empty:
-        raise ValueError(f"Could not download history data for {symbol}.")
-    
-    # vvv THIS IS THE CORRECTED LINE vvv
-    df.rename(columns={'4. close': 'Close'}, inplace=True)
-    # ^^^ THIS IS THE CORRECTED LINE ^^^
+def get_history_data(symbol: str):
+    df = get_coingecko_ohlc(symbol, days=90)
+    df_history = df[-90:].copy().reset_index(drop=True)
+    # Format as expected by frontend
+    records = []
+    for _, row in df_history.iterrows():
+        records.append({"Date": row["Date"], "Close": float(row["Close"])})
+    return records
 
-    df.sort_index(inplace=True)
-    df_history = df.tail(90).reset_index().rename(columns={'index': 'Date'})
-    df_history['Date'] = pd.to_datetime(df_history['Date']).dt.strftime('%Y-%m-%d')
-    return df_history[['Date', 'Close']].to_dict('records')
-
+# --- App Startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Loading all ML models and scalers...")
@@ -111,7 +119,8 @@ async def lifespan(app: FastAPI):
             assets["bilstm"] = tf.keras.models.load_model(f"models/{prefix}_bilstm_model.h5", compile=False)
             assets["lstm"].compile(optimizer=optimizer, loss=loss, metrics=['mae'])
             assets["bilstm"].compile(optimizer=optimizer, loss=loss, metrics=['mae'])
-            assets["xgboost"] = xgb.XGBRegressor(); assets["xgboost"].load_model(f"models/{prefix}_xgboost_model.json")
+            assets["xgboost"] = xgb.XGBRegressor()
+            assets["xgboost"].load_model(f"models/{prefix}_xgboost_model.json")
             assets["scaler"] = joblib.load(f"models/{prefix}_scaler.gz")
             loaded_assets[symbol] = assets
             print(f"Successfully loaded assets for {symbol}")
@@ -124,36 +133,45 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Crypto Price Prediction API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# --- Routes ---
 @app.get("/")
-async def root(): return {"message": "Cryptocurrency Price Prediction API"}
+async def root():
+    return {"message": "Cryptocurrency Price Prediction API"}
 
 @app.post("/predict")
 async def predict_price(request: ApiRequest):
     symbol = request.symbol
-    api_key = request.apiKey
     if symbol not in loaded_assets:
         raise HTTPException(status_code=404, detail=f"Predictions for symbol '{symbol}' are not supported or failed to load.")
+
     try:
         assets = loaded_assets[symbol]
-        X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"], api_key)
+        X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"])
         lstm_pred = inverse_scale_predictions(assets["lstm"].predict(X_live_lstm), assets["scaler"])
         bilstm_pred = inverse_scale_predictions(assets["bilstm"].predict(X_live_lstm), assets["scaler"])
         xgb_pred = inverse_scale_predictions(assets["xgboost"].predict(X_live_xgb).reshape(-1, 1), assets["scaler"])
         ensemble_pred = (lstm_pred[0] * 0.3 + bilstm_pred[0] * 0.5 + xgb_pred[0] * 0.2)
-        return {"predictions": {"lstm": float(lstm_pred[0]), "bidirectional_lstm": float(bilstm_pred[0]), "xgboost": float(xgb_pred[0]), "ensemble": float(ensemble_pred)}}
+        return {
+            "predictions": {
+                "lstm": float(lstm_pred[0]),
+                "bidirectional_lstm": float(bilstm_pred[0]),
+                "xgboost": float(xgb_pred[0]),
+                "ensemble": float(ensemble_pred)
+            }
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        print(f"Prediction error: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while generating predictions: {str(e)}")
 
 @app.post("/history")
 async def get_history(request: ApiRequest):
     symbol = request.symbol
-    api_key = request.apiKey
     if symbol not in SUPPORTED_SYMBOLS:
         raise HTTPException(status_code=404, detail=f"History for {symbol} is not supported.")
+
     try:
-        history_data = get_history_data(symbol, api_key)
+        history_data = get_history_data(symbol)
         return history_data
     except Exception as e:
-        if "rate limit" in str(e):
-             raise HTTPException(status_code=429, detail="The provided API key has exceeded its rate limit.")
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+        print(f"History error: {e}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while fetching history: {str(e)}")
