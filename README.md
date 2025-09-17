@@ -1,6 +1,9 @@
 # 🚀 Crypto Vertex AI – The Future of Crypto Price Intelligence ⚡
 
-![Crypto Vertex Banner](https://images.unsplash.com/photo-1518544804022-ebca1b5037cf?auto=format&fit=crop&w=1400&q=80)
+!<p align="center">
+  <img src="YOUR-BANNER-IMG-NAME.jpg" width="850" alt="Crypto Vertex Banner">
+</p>
+
 
 > **"Trade smarter. Invest with insight. Welcome to the next-generation AI for digital asset prediction and news."**  
 
@@ -8,7 +11,18 @@
 
 ## 🌟 LIVE DEMO & SHOWCASE
 
-🎥 [Watch the 2-minute interactive product video!](#)  
+<div align="center">
+
+<img src="Screenshot-2025-09-18-044635.jpg" alt="Dashboard Overview" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+
+<img src="Screenshot-2025-09-18-044611.jpg" alt="AI Prediction Panel" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+
+<img src="Screenshot-2025-09-18-044710.jpg" alt="Price Chart & News" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+
+<img src="Screenshot-2025-09-18-044553.jpg" alt="Recent Predictions & Footer" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+
+</div>
+  
 (A real walk-through: predictions, analysis, news boost, and more.)
 
 ---
