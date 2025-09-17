@@ -14,8 +14,8 @@ from sklearn.preprocessing import MinMaxScaler
 import os
 from contextlib import asynccontextmanager
 import requests
+import time
 
-# --- Configuration ---
 SUPPORTED_SYMBOLS = ["BTC-USD", "ETH-USD", "ADA-USD", "DOGE-USD", "SOL-USD"]
 COINGECKO_MAP = {
     "BTC-USD": "bitcoin",
@@ -30,7 +30,6 @@ class ApiRequest(BaseModel):
 
 loaded_assets = {}
 
-# --- Helper Functions ---
 def calculate_rsi(data, window=14):
     delta = data.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
@@ -51,43 +50,49 @@ def inverse_scale_predictions(predictions, scaler_obj, num_features=11, close_pr
     unscaled_array = scaler_obj.inverse_transform(dummy_array)
     return unscaled_array[:, close_price_index]
 
-def get_coingecko_ohlc(symbol: str, days=90):
+def get_coingecko_ohlc(symbol: str, days=90, max_retries=3, retry_delay=2):
     coin_id = COINGECKO_MAP[symbol]
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
     params = {"vs_currency": "usd", "days": days}
-    r = requests.get(url, params=params)
-    if not r.ok:
-        raise ValueError("CoinGecko data fetch failed or symbol not found!")
-    prices = r.json().get("prices")
-    if not prices:
-        raise ValueError("No data received from CoinGecko.")
-    df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
-    df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
-    df = df.groupby("Date").last().reset_index()
-    # Synthesize OHLCV (use Close for other columns as fallback)
-    df["Open"] = df["Close"]
-    df["High"] = df["Close"]
-    df["Low"] = df["Close"]
-    df["Volume"] = 0  # CoinGecko's market_chart OHLC does not provide volume at daily granularity in free
-    return df
+    last_exception = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if not r.ok:
+                raise ValueError(f"CoinGecko data fetch failed! (status {r.status_code})")
+            prices = r.json().get("prices")
+            if not prices:
+                raise ValueError("No price data received from CoinGecko.")
+            df = pd.DataFrame(prices, columns=["Timestamp", "Close"])
+            df["Date"] = pd.to_datetime(df["Timestamp"], unit="ms").dt.strftime("%Y-%m-%d")
+            df = df.groupby("Date").last().reset_index()
+            df["Open"] = df["Close"]
+            df["High"] = df["Close"]
+            df["Low"] = df["Close"]
+            df["Volume"] = 0
+            return df
+        except Exception as e:
+            last_exception = e
+            print(f"[CoinGecko Fetch Attempt {attempt}] Error: {e}")
+            time.sleep(retry_delay)
+    raise ValueError(f"CoinGecko data fetch failed (after retries): {last_exception}")
 
 def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     df = get_coingecko_ohlc(symbol, days=90).copy()
-    # Add features
     df['SMA_20'] = df['Close'].rolling(window=20).mean()
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['RSI'] = calculate_rsi(df['Close'])
     df['MACD'] = calculate_macd(df['Close'])
     df['Price_Change'] = df['Close'].pct_change()
     df['Volume_Change'] = df['Volume'].pct_change() if "Volume" in df else 0
-    df.ffill(inplace=True); df.bfill(inplace=True)
+    df.ffill(inplace=True)
+    df.bfill(inplace=True)
 
     features = ['Open', 'High', 'Low', 'Close', 'Volume',
                 'SMA_20', 'SMA_50', 'RSI', 'MACD', 'Price_Change', 'Volume_Change']
     df = df[features]
-    # --- FIX NaN/inf from features ---
     df = df.replace([np.inf, -np.inf], np.nan).fillna(0)
-    # ---------------------------------
+
     last_60_days = df.tail(60)
     if len(last_60_days) < 60:
         raise ValueError(f"Not enough historical data for {symbol}. Got {len(last_60_days)} days.")
@@ -96,21 +101,19 @@ def preprocess_live_data(symbol: str, scaler_obj: MinMaxScaler):
     X_live_xgb = np.reshape(scaled_data, (1, 60 * 11))
     return X_live, X_live_xgb
 
-
 def get_history_data(symbol: str):
     df = get_coingecko_ohlc(symbol, days=90)
     df_history = df[-90:].copy().reset_index(drop=True)
-    # Format as expected by frontend
     records = []
     for _, row in df_history.iterrows():
         records.append({"Date": row["Date"], "Close": float(row["Close"])})
     return records
 
-# --- App Startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Loading all ML models and scalers...")
-    optimizer = Adam(learning_rate=0.001); loss = 'mse'
+    optimizer = Adam(learning_rate=0.001)
+    loss = 'mse'
     for symbol in SUPPORTED_SYMBOLS:
         try:
             prefix = symbol.split('-')[0].lower()
@@ -128,12 +131,12 @@ async def lifespan(app: FastAPI):
             print(f"!!! FAILED to load assets for {symbol}. Error: {e}")
     print(f"Startup complete. Loaded assets for: {list(loaded_assets.keys())}")
     yield
-    print("Cleaning up resources..."); loaded_assets.clear()
+    print("Cleaning up resources...")
+    loaded_assets.clear()
 
 app = FastAPI(title="Crypto Price Prediction API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# --- Routes ---
 @app.get("/")
 async def root():
     return {"message": "Cryptocurrency Price Prediction API"}
@@ -143,7 +146,6 @@ async def predict_price(request: ApiRequest):
     symbol = request.symbol
     if symbol not in loaded_assets:
         raise HTTPException(status_code=404, detail=f"Predictions for symbol '{symbol}' are not supported or failed to load.")
-
     try:
         assets = loaded_assets[symbol]
         X_live_lstm, X_live_xgb = preprocess_live_data(symbol, assets["scaler"])
@@ -161,17 +163,16 @@ async def predict_price(request: ApiRequest):
         }
     except Exception as e:
         print(f"Prediction error: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred while generating predictions: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while generating predictions: {str(e)} (Try again in a moment if this is a CoinGecko error)")
 
 @app.post("/history")
 async def get_history(request: ApiRequest):
     symbol = request.symbol
     if symbol not in SUPPORTED_SYMBOLS:
         raise HTTPException(status_code=404, detail=f"History for {symbol} is not supported.")
-
     try:
         history_data = get_history_data(symbol)
         return history_data
     except Exception as e:
         print(f"History error: {e}")
-        raise HTTPException(status_code=500, detail=f"An error occurred while fetching history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while fetching history: {str(e)} (Try again in a moment if this is a CoinGecko error)")

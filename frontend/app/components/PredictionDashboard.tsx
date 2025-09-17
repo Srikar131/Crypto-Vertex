@@ -53,27 +53,27 @@ export default function PredictionDashboard() {
   const [selectedCrypto, setSelectedCrypto] = useState('BTC-USD');
   const [news, setNews] = useState<any[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
-  const [history, setHistory] = useState<{coin: string; price: string; verdict: string;}[]>([]);
-  const [modelModal, setModelModal] = useState<{open:boolean; key:string}>({open:false, key:''});
-  const [modelHistory, setModelHistory] = useState<{[key:string]: number[]}>({
-    ensemble:[], lstm:[], bidirectional_lstm:[], xgboost:[]
+  const [history, setHistory] = useState<{ coin: string; price: string; verdict: string; }[]>([]);
+  const [modelModal, setModelModal] = useState<{ open: boolean; key: string }>({ open: false, key: '' });
+  const [modelHistory, setModelHistory] = useState<{ [key: string]: number[] }>({
+    ensemble: [], lstm: [], bidirectional_lstm: [], xgboost: []
   });
 
   // THEME TOGGLE
   const [dark, setDark] = useState(false);
 
-  // Live Ticker State
-  const [tickerData, setTickerData] = useState<{[k: string]: { price: number; prev: number }}>({
+  // Live Ticker State (direct CoinGecko, harmless console error)
+  const [tickerData, setTickerData] = useState<{ [k: string]: { price: number; prev: number } }>({
     btc: { price: 0, prev: 0 },
     eth: { price: 0, prev: 0 },
     sol: { price: 0, prev: 0 },
     ada: { price: 0, prev: 0 },
     doge: { price: 0, prev: 0 },
   });
-
   const marqueeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    // NOTE: If you want zero CORS errors in browser, comment out this fetch and fetch prices via backend
     async function getTicker() {
       try {
         const res = await fetch(
@@ -87,7 +87,7 @@ export default function PredictionDashboard() {
           ada: { price: json.cardano.usd, prev: prev.ada.price || json.cardano.usd },
           doge: { price: json.dogecoin.usd, prev: prev.doge.price || json.dogecoin.usd }
         }));
-      } catch {}
+      } catch { }
     }
     getTicker();
     const int = setInterval(getTicker, 30000);
@@ -95,7 +95,8 @@ export default function PredictionDashboard() {
   }, []);
 
   const cryptoOptions = ['BTC-USD', 'ETH-USD', 'ADA-USD', 'SOL-USD', 'DOGE-USD'];
-  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:10000";
+  // FIXED: fallback port now 8000, not 10000
+  const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000";
 
   const fetchData = useCallback(async () => {
     setIsLoading(true);
@@ -165,11 +166,11 @@ export default function PredictionDashboard() {
         price: formatPrice(preds.ensemble),
         verdict,
       };
-      if (prev.length && prev[prev.length-1].coin === latest.coin && prev[prev.length-1].price === latest.price) return prev;
+      if (prev.length && prev[prev.length - 1].coin === latest.coin && prev[prev.length - 1].price === latest.price) return prev;
       return [...prev.slice(-14), latest];
     });
     setModelHistory(prev => {
-      const updated = {...prev};
+      const updated = { ...prev };
       Object.keys(prev).forEach(k => {
         updated[k] = [...(prev[k] || []), prediction.predictions[k as keyof PredictionData["predictions"]]].slice(-20);
       });
@@ -184,20 +185,20 @@ export default function PredictionDashboard() {
         onClick={() => setDark(d => !d)}
         className="fixed top-5 right-5 z-50 bg-white dark:bg-[#20232b] border border-gray-200 dark:border-gray-700 rounded-full shadow px-4 py-2 flex items-center gap-1 text-sm font-semibold select-none transition hover:bg-gray-100 dark:hover:bg-[#232635]"
         aria-label="Toggle Dark Mode"
-        style={{minWidth:48}}
+        style={{ minWidth: 48 }}
       >
         {dark ? "🌙 Dark" : "☀️ Light"}
       </button>
       {/* SCROLLING MARQUEE ticker */}
       <div className="w-full max-w-3xl mx-auto overflow-hidden mb-4"
-           style={{
-             background: dark ? '#23252b' : '#e0e1e5',
-             borderRadius: '15px',
-             minHeight: '44px',
-             display:'flex',
-             alignItems:'center',
-             border: dark ? '1.5px solid #32353c' : '1.5px solid #ececec'
-           }}>
+        style={{
+          background: dark ? '#23252b' : '#e0e1e5',
+          borderRadius: '15px',
+          minHeight: '44px',
+          display: 'flex',
+          alignItems: 'center',
+          border: dark ? '1.5px solid #32353c' : '1.5px solid #ececec'
+        }}>
         <div
           ref={marqueeRef}
           className="whitespace-nowrap"
@@ -226,7 +227,6 @@ export default function PredictionDashboard() {
           }
         `}</style>
       </div>
-
       <div className="max-w-3xl mx-auto py-8 px-2">
         {/* Header */}
         <div className="w-full flex flex-col items-center mb-6 mt-4">
@@ -239,7 +239,6 @@ export default function PredictionDashboard() {
             AI-powered <span className="font-semibold">crypto predictions</span> for smarter trading.
           </p>
         </div>
-
         {/* Selector */}
         <div className="mb-7 flex flex-col md:flex-row md:items-end md:gap-5 gap-4 items-center">
           <div>
@@ -287,7 +286,7 @@ export default function PredictionDashboard() {
                   <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-3 mb-2">
                     <div className={`h-3 rounded-full transition-all duration-500 ${
                       verdict === 'Bullish' ? 'bg-green-400 dark:bg-green-500' : verdict === 'Bearish' ? 'bg-red-400 dark:bg-red-500' : 'bg-gray-400 dark:bg-gray-600'
-                    }`} style={{width:`${Math.max(18, confidence).toFixed(1)}%`}} />
+                    }`} style={{ width: `${Math.max(18, confidence).toFixed(1)}%` }} />
                   </div>
                   <span className="text-sm font-semibold text-gray-700 dark:text-gray-100">{comment}</span>
                 </div>
@@ -295,7 +294,6 @@ export default function PredictionDashboard() {
             );
           })()}
         </div>
-
         {/* Predictions FIRST */}
         <div className="mb-8">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
@@ -311,7 +309,7 @@ export default function PredictionDashboard() {
                   rounded-xl shadow bg-gray-50 dark:bg-[#23262a] py-6 px-2 sm:px-3 relative cursor-pointer
                   border-2 ${model.accent} transition-all duration-200
                 `}
-                onClick={() => setModelModal({open:true, key: model.key})}
+                onClick={() => setModelModal({ open: true, key: model.key })}
               >
                 <span className="text-3xl mb-2">{model.emoji}</span>
                 <span className={`text-base font-semibold mb-1 ${model.accent}`}>{model.label}</span>
@@ -326,7 +324,6 @@ export default function PredictionDashboard() {
             ))}
           </div>
         </div>
-
         {/* Chart BELOW predictions */}
         <div className="bg-gray-100 dark:bg-[#20232b] border border-gray-200 dark:border-gray-700 rounded-xl p-6 mb-8 shadow-sm">
           <h2 className="text-xl font-semibold text-gray-800 dark:text-gray-100 mb-4 text-center">Last 90 Days Price</h2>
@@ -349,34 +346,30 @@ export default function PredictionDashboard() {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-
         {/* News last */}
         <div className="bg-gray-100 dark:bg-[#23262a] border border-blue-100 dark:border-blue-900 rounded-xl py-4 px-6 mb-2 shadow flex flex-col">
           <div className="flex items-center justify-between mb-2">
-            <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-400">Latest {selectedCrypto.replace('-USD','')} News</h3>
+            <h3 className="text-lg font-semibold text-blue-900 dark:text-blue-400">Latest {selectedCrypto.replace('-USD', '')} News</h3>
             {newsLoading && <div className="text-sky-500 dark:text-sky-300 animate-pulse text-xs">loading...</div>}
           </div>
           <ul className="space-y-2">
-            {
-              news && news.length > 0 ? news.map((item: any, i: number) => (
-                <li key={i} className="flex items-start gap-2 transition hover:scale-[1.01]">
-                  <span className="text-base mt-0.5 text-blue-400 dark:text-blue-200">•</span>
-                  <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-900 dark:text-blue-100 hover:text-sky-500 dark:hover:text-sky-400 underline font-medium transition-colors">
-                    {item.title?.length > 110 ? item.title.slice(0,110)+'...' : item.title}
-                  </a>
-                </li>
-              )) : (
-                <li className="flex items-start gap-2">
-                  <span className="text-base mt-0.5 text-blue-400 dark:text-blue-200">•</span>
-                  <span className="text-sm text-slate-500 dark:text-slate-300 font-medium">
-                    Example headline: 'Bitcoin price rises after ETF news. Read more on Coindesk.'
-                  </span>
-                </li>
-              )
-            }
+            {news && news.length > 0 ? news.map((item: any, i: number) => (
+              <li key={i} className="flex items-start gap-2 transition hover:scale-[1.01]">
+                <span className="text-base mt-0.5 text-blue-400 dark:text-blue-200">•</span>
+                <a href={item.url} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-900 dark:text-blue-100 hover:text-sky-500 dark:hover:text-sky-400 underline font-medium transition-colors">
+                  {item.title?.length > 110 ? item.title.slice(0, 110) + '...' : item.title}
+                </a>
+              </li>
+            )) : (
+              <li className="flex items-start gap-2">
+                <span className="text-base mt-0.5 text-blue-400 dark:text-blue-200">•</span>
+                <span className="text-sm text-slate-500 dark:text-slate-300 font-medium">
+                  Example headline: 'Bitcoin price rises after ETF news. Read more on Coindesk.'
+                </span>
+              </li>
+            )}
           </ul>
         </div>
-
         {/* Prediction History */}
         <div className="bg-gray-50 dark:bg-[#191c20] border border-gray-200 dark:border-gray-700 rounded-xl py-4 px-6 my-8 shadow flex flex-col">
           <div className="flex items-center gap-2 mb-2">
@@ -391,7 +384,7 @@ export default function PredictionDashboard() {
                 <li key={i} className="flex items-center gap-3 px-1">
                   <span className={
                     item.verdict === 'Bullish' ? 'text-green-500 dark:text-green-400' :
-                    item.verdict === 'Bearish' ? 'text-red-500 dark:text-red-400' : 'text-gray-400 dark:text-gray-500'
+                      item.verdict === 'Bearish' ? 'text-red-500 dark:text-red-400' : 'text-gray-400 dark:text-gray-500'
                   }>
                     {item.verdict === 'Bullish' && '🚀'}
                     {item.verdict === 'Bearish' && '🔻'}
@@ -401,7 +394,7 @@ export default function PredictionDashboard() {
                   <span className="text-gray-600 dark:text-gray-200">Ensemble: <b>{item.price}</b></span>
                   <span className={`font-semibold uppercase ml-3 text-xs tracking-wider ${
                     item.verdict === 'Bullish' ? 'text-green-600 dark:text-green-400' :
-                    item.verdict === 'Bearish' ? 'text-red-500 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'
+                      item.verdict === 'Bearish' ? 'text-red-500 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'
                   }`}>
                     {item.verdict}
                   </span>
@@ -410,7 +403,6 @@ export default function PredictionDashboard() {
             </ul>
           )}
         </div>
-
         {/* Model Info Drawer */}
         {modelModal.open && (() => {
           const key = modelModal.key;
@@ -424,17 +416,17 @@ export default function PredictionDashboard() {
             xgboost: 'A gradient-boosted tree model—excels at complex, non-sequential correlations.'
           }[key] || '';
           return (
-            <div className="fixed inset-0 z-30 bg-black/30 flex items-center justify-center" onClick={() => setModelModal({open:false, key:''})}>
+            <div className="fixed inset-0 z-30 bg-black/30 flex items-center justify-center" onClick={() => setModelModal({ open: false, key: '' })}>
               <div className="bg-white dark:bg-[#22232a] rounded-xl border-2 border-purple-100 dark:border-purple-800 shadow-xl w-full max-w-md mx-auto p-6 relative"
                 onClick={e => e.stopPropagation()}>
-                <button className="absolute top-2 right-3 text-gray-400 dark:text-gray-300 text-xl font-bold" onClick={() => setModelModal({open:false, key:''})}>&times;</button>
+                <button className="absolute top-2 right-3 text-gray-400 dark:text-gray-300 text-xl font-bold" onClick={() => setModelModal({ open: false, key: '' })}>&times;</button>
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-3xl">{emoji}</span>
                   <span className="font-bold text-lg">{name}</span>
                 </div>
                 <p className="text-xs text-gray-500 dark:text-gray-300 mb-2 italic">{desc}</p>
                 <div className="font-mono text-[1.03rem] mb-4 text-purple-700 dark:text-purple-300">
-                  Current Value: <span className="font-bold">{prediction ? formatPrice(prediction.predictions[key as keyof PredictionData["predictions"]]): '--'}</span>
+                  Current Value: <span className="font-bold">{prediction ? formatPrice(prediction.predictions[key as keyof PredictionData["predictions"]]) : '--'}</span>
                 </div>
                 <div className="w-full h-20 flex items-end mb-2">
                   {/* Mini chart */}
@@ -444,10 +436,10 @@ export default function PredictionDashboard() {
                       stroke={dark ? "#c4b5fd" : "#a78bfa"}
                       strokeWidth="3"
                       points={
-                        mh.map((v,i) => {
-                          const x = 7 + i*(126/(mh.length-1||1));
+                        mh.map((v, i) => {
+                          const x = 7 + i * (126 / (mh.length - 1 || 1));
                           const min = Math.min(...mh); const max = Math.max(...mh);
-                          const y = 48 - ((v-(min||0))/((max-min)||1) * 42);
+                          const y = 48 - ((v - (min || 0)) / ((max - min) || 1) * 42);
                           return `${x},${y.toFixed(1)}`;
                         }).join(' ')
                       }
