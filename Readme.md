@@ -1,10 +1,8 @@
 # 🚀 Crypto Vertex AI – The Future of Crypto Price Intelligence ⚡
 
 !<p align="center">
-  <img src="YOUR-BANNER-IMG-NAME.jpg" width="850" alt="Crypto Vertex Banner">
+  <img src="assets/cryptovertexbanner.jpg" width="850" alt="Crypto Vertex Banner">
 </p>
-
-
 > **"Trade smarter. Invest with insight. Welcome to the next-generation AI for digital asset prediction and news."**  
 
 ---
@@ -13,13 +11,10 @@
 
 <div align="center">
 
-<img src="Screenshot-2025-09-18-044635.jpg" alt="Dashboard Overview" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044611.jpg" alt="AI Prediction Panel" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044710.jpg" alt="Price Chart & News" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044553.jpg" alt="Recent Predictions & Footer" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+<img src="assets/pic-1.jpg" alt="Dashboard Overview" width="75%">
+<img src="assets/pic-2.jpg" alt="AI Prediction Panel" width="75%">
+<img src="assets/pic-3.jpg" alt="Price Chart & News" width="75%">
+<img src="assets/pic-4.jpg" alt="Recent Predictions & Footer" width="75%">
 
 </div>
   
