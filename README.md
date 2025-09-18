@@ -13,13 +13,10 @@
 
 <div align="center">
 
-<img src="Screenshot-2025-09-18-044635.jpg" alt="Dashboard Overview" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044611.jpg" alt="AI Prediction Panel" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044710.jpg" alt="Price Chart & News" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
-
-<img src="Screenshot-2025-09-18-044553.jpg" alt="Recent Predictions & Footer" width="75%" style="margin-bottom: 24px; border-radius: 18px; box-shadow: 0 4px 32px #00000011;">
+<img src="assets/screenshots/pic-1.jpg" alt="Dashboard Overview" width="75%">
+<img src="assets/screenshots/pic-2.jpg" alt="AI Prediction Panel" width="75%">
+<img src="assets/screenshots/pic-3.jpg" alt="Price Chart & News" width="75%">
+<img src="assets/screenshots/pic-4.jpg" alt="Recent Predictions & Footer" width="75%">
 
 </div>
   
