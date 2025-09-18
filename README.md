@@ -1,7 +1,7 @@
 # 🚀 Crypto Vertex AI – The Future of Crypto Price Intelligence ⚡
 
 !<p align="center">
-  <img src="YOUR-BANNER-IMG-NAME.jpg" width="850" alt="Crypto Vertex Banner">
+  <img src="assets/screenshots/cryptovertexbanner.jpg" width="850" alt="Crypto Vertex Banner">
 </p>
 
 
