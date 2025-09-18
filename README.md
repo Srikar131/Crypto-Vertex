@@ -127,6 +127,4 @@ This isn't just a web app—it's **how tomorrow’s traders will think**:
 Where code, finance, and intelligence meet.  
 Built with love, passion, and the power of modern AI.
 
----
 
-[![GitHub Repo](https://img.shields.io/badge/View_on_GitHub-181717?logo=github&style=for-the-badge&logoColor=white)]([YOUR_REPO_LINK_HERE](https://github.com/Srikar131))
